@@ -1,0 +1,5 @@
+FROM pytorch/pytorch:1.7.0-cuda11.0-cudnn8-runtime
+
+SHELL ["/bin/bash", "-ec"]
+RUN conda install tensorboard==2.5.0 
+RUN pip install dominate
