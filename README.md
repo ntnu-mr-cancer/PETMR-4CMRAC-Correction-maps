@@ -23,5 +23,5 @@ The images in A and B are both saved numpy arrays where each saved file contains
 A working dummy dataset can be created by running [scripts/create_debug_dataset.py](scripts/create_debug_dataset.py) from the project root folder.
 
 ### Training and Testing
-The commands used for training and testing can be found in the script [scripts/train_test_pix2pix.sh](scripts/train_test_pix2pix.sh). 
+The commands used for training and testing can be found in the script [scripts/resnet_9blocks.sh](scripts/resnet_9blocks.sh).
 The training is monitored using tensorboard.

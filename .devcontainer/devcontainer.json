@@ -11,5 +11,5 @@
       "extensions": ["ms-python.python"]
     }
   },
-  "runArgs": ["--gpus", "all", "--name", "permrac"]
+  "runArgs": ["--gpus", "all", "--name", "petmrac"]
 }

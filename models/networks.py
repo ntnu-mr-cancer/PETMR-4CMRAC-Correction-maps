@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
-
+import math
 
 ###############################################################################
 # Helper Functions
@@ -64,7 +64,12 @@ def get_scheduler(optimizer, opt):
         return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
     return scheduler
 
-
+def lecun_normal_(tensor: torch.Tensor) -> torch.Tensor:
+    input_size = tensor.shape[-1] # Assuming that the weights' input dimension is the last.
+    std = math.sqrt(1/input_size)
+    with torch.no_grad():
+        return tensor.normal_(-std,std)
+    
 def init_weights(net, init_type='normal', init_gain=0.02):
     """Initialize network weights.
 
@@ -87,6 +92,8 @@ def init_weights(net, init_type='normal', init_gain=0.02):
                 init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
             elif init_type == 'orthogonal':
                 init.orthogonal_(m.weight.data, gain=init_gain)
+            elif init_type == 'lecun_normal':
+                lecun_normal_(m.weight.data)
             else:
                 raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
             if hasattr(m, 'bias') and m.bias is not None:
@@ -117,7 +124,7 @@ def init_net(net, init_type='normal', init_gain=0.02, gpu_ids=[]):
     return net
 
 
-def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02, gpu_ids=[], padding_type='reflect'):
+def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02, gpu_ids=[], padding_type='reflect', resnet_activation_function='relu'):
     """Create a generator
 
     Parameters:
@@ -146,23 +153,35 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     """
     net = None
     norm_layer = get_norm_layer(norm_type=norm)
+    
+    if resnet_activation_function == 'relu':
+        activation_function = nn.ReLU
+    elif resnet_activation_function == 'gelu':
+        activation_function = nn.GELU
+    elif resnet_activation_function == 'selu':
+        activation_function = nn.SELU
+    else:
+        raise NotImplementedError('Activation function [%s] is not recognized' % resnet_activation_function)
 
     if netG == 'resnet_9blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=9)
+        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=9, activation_function=activation_function)
     elif netG == 'resnet_6blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=6)
+        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=6, activation_function=activation_function)
     elif netG == 'resnet_12blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=12)
+        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=12, activation_function=activation_function)
     elif netG == 'se_resnet_9blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=9, se=True)
+        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=9, se=True, activation_function=activation_function)
     elif netG == 'se_resnet_6blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=6, se=True)
+        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=6, se=True, activation_function=activation_function)
+    elif netG == 'se_resnet_12blocks':
+        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, padding_type=padding_type, n_blocks=12, se=True, activation_function=activation_function)
     elif netG == 'unet_128':
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % netG)
+    
     return init_net(net, init_type, init_gain, gpu_ids)
 
 
@@ -325,7 +344,7 @@ class ResnetGenerator(nn.Module):
     We adapt Torch code and idea from Justin Johnson's neural style transfer project(https://github.com/jcjohnson/fast-neural-style)
     """
 
-    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect', se=False):
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect', se=False, activation_function = nn.ReLU):
         """Construct a Resnet-based generator
 
         Parameters:
@@ -357,19 +376,19 @@ class ResnetGenerator(nn.Module):
 
         model += [nn.Conv2d(input_nc, ngf, kernel_size=7, padding=p, bias=use_bias),
                  norm_layer(ngf),
-                 nn.ReLU(True)]
+                 activation_function(True)]
 
         n_downsampling = 2
         for i in range(n_downsampling):  # add downsampling layers
             mult = 2 ** i
             model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
                       norm_layer(ngf * mult * 2),
-                      nn.ReLU(True)]
+                      activation_function(True)]
 
         mult = 2 ** n_downsampling
         for i in range(n_blocks):       # add ResNet blocks
 
-            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias, se = se)]
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias, se = se, activation_function=activation_function)]
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
@@ -378,7 +397,7 @@ class ResnetGenerator(nn.Module):
                                          padding=1, output_padding=1,
                                          bias=use_bias),
                       norm_layer(int(ngf * mult / 2)),
-                      nn.ReLU(True)]
+                      activation_function(True)]
             # model += [nn.Upsample(scale_factor = 2, mode='bilinear'),
             #               nn.ReflectionPad2d(1),
             #               nn.Conv2d(ngf * mult, int(ngf * mult / 2),
@@ -409,7 +428,7 @@ class ResnetGenerator(nn.Module):
 class ResnetBlock(nn.Module):
     """Define a Resnet block"""
 
-    def __init__(self, dim, padding_type, norm_layer, use_dropout, use_bias, se=False):
+    def __init__(self, dim, padding_type, norm_layer, use_dropout, use_bias, se=False, activation_function=nn.ReLU):
         """Initialize the Resnet block
 
         A resnet block is a conv block with skip connections
@@ -419,9 +438,9 @@ class ResnetBlock(nn.Module):
         """
         super(ResnetBlock, self).__init__()
         self.se = se
-        self.conv_block = self.build_conv_block(dim, padding_type, norm_layer, use_dropout, use_bias)
+        self.conv_block = self.build_conv_block(dim, padding_type, norm_layer, use_dropout, use_bias, activation_function)
 
-    def build_conv_block(self, dim, padding_type, norm_layer, use_dropout, use_bias):
+    def build_conv_block(self, dim, padding_type, norm_layer, use_dropout, use_bias, activation_function):
         """Construct a convolutional block.
 
         Parameters:
@@ -436,7 +455,7 @@ class ResnetBlock(nn.Module):
         conv_block = []
         p = 0
         if self.se:
-            self.se = SE_Block(dim)
+            self.se = SE_Block(dim, activation_function=activation_function)
 
         if padding_type == 'reflect':
             conv_block += [nn.ReflectionPad2d(1)]
@@ -447,7 +466,7 @@ class ResnetBlock(nn.Module):
         else:
             raise NotImplementedError('padding [%s] is not implemented' % padding_type)
 
-        conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), norm_layer(dim), nn.ReLU(True)]
+        conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), norm_layer(dim), activation_function(True)]
         if use_dropout:
             conv_block += [nn.Dropout(0.5)]
 
@@ -476,12 +495,12 @@ class ResnetBlock(nn.Module):
 
 class SE_Block(nn.Module):
     "credits: https://github.com/moskomule/senet.pytorch/blob/master/senet/se_module.py#L4"
-    def __init__(self, c, r=16):
+    def __init__(self, c, r=16, activation_function = nn.ReLU):
         super().__init__()
         self.squeeze = nn.AdaptiveAvgPool2d(1)
         self.excitation = nn.Sequential(
             nn.Linear(c, c // r, bias=False),
-            nn.ReLU(inplace=True),
+            activation_function(inplace=True),
             nn.Linear(c // r, c, bias=False),
             nn.Sigmoid()
         )
